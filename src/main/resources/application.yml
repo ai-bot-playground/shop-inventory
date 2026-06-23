@@ -1,6 +1,33 @@
 spring:
   application:
     name: shop-inventory
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+  kafka:
+    consumer:
+      group-id: ${SPRING_KAFKA_CONSUMER_GROUP_ID:shop-inventory}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+shop:
+  inventory:
+    order-events-topic: order-events
+    inventory-events-topic: inventory-events
+    reservation-ttl-seconds: ${RESERVATION_TTL_SECONDS:600}
+  outbox:
+    enabled: true
+    poll-ms: 1000
+  test-support:
+    enabled: ${SHOP_TEST_SUPPORT_ENABLED:false}
+
 management:
   endpoints:
     web:
