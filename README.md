@@ -69,3 +69,36 @@ Partycjonowanie po `productId`; wiele instancji w grupie (≤ liczba partycji):
 `SPRING_DATASOURCE_URL=.../inventory_db`, `SPRING_DATA_REDIS_HOST=redis`,
 `SPRING_KAFKA_BOOTSTRAP_SERVERS=shop-kafka:9092`,
 `SPRING_KAFKA_CONSUMER_GROUP_ID=shop-inventory`, `RESERVATION_TTL_SECONDS=600`.
+
+## High Level Design (ogólny workflow)
+
+Serwis sterowany zdarzeniami. Konsumuje `OrderCreated`/`ReleaseStock` z Kafki,
+rezerwuje atomowo w Redis (Lua), zapisuje prawdę + zdarzenie do Postgresa
+(outbox) w jednej transakcji, a publisher wypycha `StockReserved/Failed/Released`
+na `inventory-events`. REST tylko do odczytu dostępności (+ test-support w non-prod).
+
+```mermaid
+flowchart LR
+    OE[["order-events"]] -->|"OrderCreated / ReleaseStock"| INV["shop-inventory consumer"]
+    INV -->|"Lua atomic"| R[("Redis stock:{productId}")]
+    INV -->|"reservation + event (tx)"| DB[("Postgres inventory_db + outbox")]
+    OBX["Outbox publisher"] -->|"StockReserved/Failed/Released"| IE[["inventory-events"]]
+    GW["gateway"] -->|"GET /inventory/{id} -> available"| INV
+```
+
+## Low Level Design (diagram aktywności)
+
+Rezerwacja na `OrderCreated`:
+
+```mermaid
+flowchart TD
+    A(["OrderCreated"]) --> B{"event_id w processed_events?"}
+    B -- tak --> Z(["ack, pomiń (idempotencja)"])
+    B -- nie --> C{"Lua: stock >= qty?"}
+    C -- tak --> D["DECRBY stock + SET reservation TTL"]
+    D --> E["(tx) reservation + StockReserved -> outbox + mark processed"]
+    C -- nie --> F["(tx) StockReservationFailed -> outbox + mark processed"]
+    E --> P["publisher emituje zdarzenie"]
+    F --> P
+    P --> Z2(["ack"])
+```
