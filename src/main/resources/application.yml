@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: shop-inwentory
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
