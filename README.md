@@ -1,4 +1,4 @@
-# shop-inwentory
+# shop-inventory
 
 Serce współbieżności całego systemu. Zarządza stanem magazynowym i rezerwacjami
 tak, by tysiące jednoczesnych kupujących nie doprowadziło do *oversellingu*
@@ -6,8 +6,8 @@ tak, by tysiące jednoczesnych kupujących nie doprowadziło do *oversellingu*
 `Dockerfile` i kodem. Stack: Spring Boot + Spring Data Redis + JPA (Postgres) +
 Spring Kafka.
 
-> Nazwa repo to `shop-inwentory` (zgodnie z ustaleniem). Baza nazywa się
-> `inventory_db`, a grupa konsumenta Kafki `shop-inwentory`.
+> Nazwa repo to `shop-inventory` (zgodnie z ustaleniem). Baza nazywa się
+> `inventory_db`, a grupa konsumenta Kafki `shop-inventory`.
 
 ## Dwa miejsca prawdy
 
@@ -22,7 +22,7 @@ uruchamia reconciliation (wyrównanie Redis ↔ Postgres).
 
 ## Zdarzenia Kafki
 
-Konsumuje (grupa `shop-inwentory`):
+Konsumuje (grupa `shop-inventory`):
 - `OrderCreated` (z `order-events`) → próba rezerwacji.
 - `ReleaseStock` (komenda kompensująca) → zwolnienie rezerwacji.
 
@@ -63,9 +63,9 @@ przed podwójną rezerwacją/zwolnieniem.
 
 ## Skalowanie
 Partycjonowanie po `productId`; wiele instancji w grupie (≤ liczba partycji):
-`docker compose up --scale shop-inwentory=3`. Produkcyjnie Redis Cluster.
+`docker compose up --scale shop-inventory=3`. Produkcyjnie Redis Cluster.
 
 ## Konfiguracja (env)
 `SPRING_DATASOURCE_URL=.../inventory_db`, `SPRING_DATA_REDIS_HOST=redis`,
 `SPRING_KAFKA_BOOTSTRAP_SERVERS=shop-kafka:9092`,
-`SPRING_KAFKA_CONSUMER_GROUP_ID=shop-inwentory`, `RESERVATION_TTL_SECONDS=600`.
+`SPRING_KAFKA_CONSUMER_GROUP_ID=shop-inventory`, `RESERVATION_TTL_SECONDS=600`.

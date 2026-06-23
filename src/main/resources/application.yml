@@ -1,6 +1,6 @@
 spring:
   application:
-    name: shop-inwentory
+    name: shop-inventory
 management:
   endpoints:
     web:
