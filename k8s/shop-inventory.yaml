@@ -1,0 +1,73 @@
+# shop-inventory on Kubernetes (preprod).
+# Apply: kubectl --context kind-preprod apply -f shop-inventory/k8s/shop-inventory.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shop-inventory-config
+  namespace: shop
+data:
+  SPRING_PROFILES_ACTIVE: "preprod"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-inventory
+  namespace: shop
+  labels:
+    app: shop-inventory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shop-inventory
+  template:
+    metadata:
+      labels:
+        app: shop-inventory
+    spec:
+      containers:
+        - name: shop-inventory
+          image: localhost/shop-inventory:0.0.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: shop-inventory-config
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-inventory
+  namespace: shop
+spec:
+  type: ClusterIP
+  selector:
+    app: shop-inventory
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
