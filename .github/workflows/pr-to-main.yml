@@ -1,0 +1,15 @@
+name: PR to main (preprod gate)
+
+# Opening a PR into main runs the full preprod quality gate on the self-hosted
+# runner: build this service's PR image, deploy it onto kind-preprod and run the
+# cross-service acceptance suite. The PR is only mergeable once this is green
+# (enforce via branch protection -> required status check "preprod-gate / gate").
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  preprod-gate:
+    uses: ai-bot-playground/shop-acceptance-tests/.github/workflows/gate.yml@develop_v_0.0.1
+    with:
+      service: shop-inventory

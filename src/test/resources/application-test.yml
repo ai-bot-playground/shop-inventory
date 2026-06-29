@@ -1,0 +1,12 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:17-alpine:///inventorydb
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  kafka:
+    listener:
+      auto-startup: false        # no broker in component tests
+shop:
+  test-support:
+    enabled: true
+  outbox:
+    enabled: false               # assert the outbox table directly
