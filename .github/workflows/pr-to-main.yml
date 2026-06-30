@@ -1,12 +1,12 @@
-name: PR to main (preprod gate)
+name: PR preprod gate
 
-# Opening a PR into main runs the full preprod quality gate on the self-hosted
-# runner: build this service's PR image, deploy it onto kind-preprod and run the
-# cross-service acceptance suite. The PR is only mergeable once this is green
+# Opening a PR (against ANY base branch) runs the full preprod quality gate on
+# THIS repo's own self-hosted runner (runner label = this service's name): build
+# this service's PR image, deploy it onto the local kind-preprod cluster and run
+# the cross-service acceptance suite. The PR is only mergeable once this is green
 # (enforce via branch protection -> required status check "preprod-gate / gate").
 on:
   pull_request:
-    branches: [main]
 
 jobs:
   preprod-gate:
