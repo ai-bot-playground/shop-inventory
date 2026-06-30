@@ -10,6 +10,6 @@ on:
 
 jobs:
   preprod-gate:
-    uses: ai-bot-playground/shop-acceptance-tests/.github/workflows/gate.yml@develop_v_0.0.1
+    uses: ai-bot-playground/shop-acceptance-tests/.github/workflows/gate.yml@main
     with:
       service: shop-inventory
