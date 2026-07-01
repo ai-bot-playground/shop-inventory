@@ -1,104 +1,71 @@
 # shop-inventory
 
-Serce współbieżności całego systemu. Zarządza stanem magazynowym i rezerwacjami
-tak, by tysiące jednoczesnych kupujących nie doprowadziło do *oversellingu*
-(sprzedaży większej liczby sztuk niż jest w magazynie). Standalone repo z własnym
-`Dockerfile` i kodem. Stack: Spring Boot + Spring Data Redis + JPA (Postgres) +
-Spring Kafka.
+Mikroserwis zarządzający stanami magazynowymi w systemie sklepowym. Zapobiega overselllingowi dzięki atomowym skryptom Lua na Redis przy jednoczesnym utrzymaniu trwałości w Postgres.
 
-> Nazwa repo to `shop-inventory` (zgodnie z ustaleniem). Baza nazywa się
-> `inventory_db`, a grupa konsumenta Kafki `shop-inventory`.
+## Stack
 
-## Dwa miejsca prawdy
+- **Java 25 / Spring Boot** — logika aplikacji
+- **Redis** — gorąca ścieżka: `stock:{productId}`, `reservation:{orderId}` (Lua)
+- **PostgreSQL** (`inventory_db`) — źródło prawdy: `products`, `reservations`, `outbox`, `processed_events`
+- **Kafka** — konsument `order-events`, producent `inventory-events`
+- **Flyway** — migracje schematu (`V1__init.sql`)
 
-- **Redis = gorąca ścieżka.** `stock:{productId}` to licznik, na którym toczy się
-  walka o sztuki. Rezerwacja przez atomowy skrypt Lua.
-- **Postgres (`inventory_db`) = źródło prawdy + historia.**
-  `products(total_stock, version)` z blokadą optymistyczną, `reservations`,
-  `outbox`, `processed_events`. Aktualizowany asynchronicznie względem Redis.
-
-Przy starcie serwis rozgrzewa liczniki w Redis na podstawie Postgresa, a w tle
-uruchamia reconciliation (wyrównanie Redis ↔ Postgres).
-
-## Zdarzenia Kafki
-
-Konsumuje (grupa `shop-inventory`):
-- `OrderCreated` (z `order-events`) → próba rezerwacji.
-- `ReleaseStock` (komenda kompensująca) → zwolnienie rezerwacji.
-
-Publikuje (na `inventory-events`, klucz = `productId`):
-- `StockReserved`, `StockReservationFailed`, `StockReleased`.
-
-## Logika rezerwacji (do zaimplementowania)
-
-1. Odbierz `OrderCreated`, sprawdź `processed_events` (idempotencja).
-2. Atomowy skrypt Lua: sprawdź + zmniejsz `stock:{productId}` + załóż
-   `reservation:{orderId}` z TTL (`RESERVATION_TTL_SECONDS`):
+## Jak działa
 
 ```
-KEYS[1]=stock:{productId}, KEYS[2]=reservation:{orderId}; ARGV[1]=qty, ARGV[2]=ttl
-if redis.call('GET', KEYS[1]) >= qty then
-    redis.call('DECRBY', KEYS[1], qty)
-    redis.call('SET', KEYS[2], qty, 'EX', ttl, 'NX')
-    return 1   -- zarezerwowano
-else
-    return 0   -- brak stocku
-end
+order-events ──► OrderEventListener ──► InventoryService
+                                              │
+                                   Lua reserve/release (Redis)
+                                              │
+                               (tx) reservation + outbox (Postgres)
+                                              │
+                                       OutboxPublisher (co 1 s)
+                                              │
+                                    inventory-events (Kafka)
 ```
 
-3. Sukces → zapis rezerwacji + `StockReserved` do `outbox` (jedna transakcja).
-   Brak → `StockReservationFailed`.
-4. Publisher outboxa wysyła zdarzenie do Kafki.
+1. **`OrderCreated`** → atomowy Lua: sprawdź i zmniejsz `stock:{productId}`, ustaw `reservation:{orderId}` z TTL → emit `StockReserved` / `StockReservationFailed`
+2. **`ReleaseStock`** → atomowy Lua: `INCRBY stock` + `DEL reservation` → emit `StockReleased`
+3. Idempotencja: `processed_events(event_id PK)` chroni przed podwójnym przetworzeniem
 
-## Kompensacja i bezpiecznik
+## REST API
 
-- `ReleaseStock` → atomowo `INCRBY stock` + `DEL reservation`, **idempotentnie**
-  (zwolnienie tej samej rezerwacji dwa razy nie zwróci sztuk podwójnie).
-- TTL rezerwacji w Redis = niezależna siatka bezpieczeństwa, gdy zdarzenie
-  kompensujące zaginie.
+| Metoda | Ścieżka | Opis |
+|--------|---------|------|
+| `GET` | `/inventory/{productId}` | Aktualny stan (Redis, fallback do Postgres) |
+| `PUT` | `/inventory/{productId}` | Ustaw stan (tylko test-support) |
+| `DELETE` | `/inventory/{productId}` | Usuń produkt (tylko test-support) |
 
-## Idempotencja (obowiązkowa)
-Kafka dostarcza *at-least-once* → tabela `processed_events(event_id PK)` chroni
-przed podwójną rezerwacją/zwolnieniem.
+Endpointy `PUT`/`DELETE` aktywne wyłącznie gdy `SHOP_TEST_SUPPORT_ENABLED=true`.
 
-## Skalowanie
-Partycjonowanie po `productId`; wiele instancji w grupie (≤ liczba partycji):
-`docker compose up --scale shop-inventory=3`. Produkcyjnie Redis Cluster.
+## Zmienne środowiskowe
 
-## Konfiguracja (env)
-`SPRING_DATASOURCE_URL=.../inventory_db`, `SPRING_DATA_REDIS_HOST=redis`,
-`SPRING_KAFKA_BOOTSTRAP_SERVERS=shop-kafka:9092`,
-`SPRING_KAFKA_CONSUMER_GROUP_ID=shop-inventory`, `RESERVATION_TTL_SECONDS=600`.
+| Zmienna | Domyślna | Opis |
+|---------|---------|------|
+| `SPRING_DATASOURCE_URL` | — | JDBC URL do `inventory_db` |
+| `SPRING_DATA_REDIS_HOST` | `localhost` | Host Redis |
+| `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Broker Kafka |
+| `SPRING_KAFKA_CONSUMER_GROUP_ID` | `shop-inventory` | Grupa konsumenta |
+| `RESERVATION_TTL_SECONDS` | `600` | TTL rezerwacji w Redis |
+| `SHOP_TEST_SUPPORT_ENABLED` | `false` | Włącz endpointy testowe |
 
-## High Level Design (ogólny workflow)
+## Budowanie i uruchamianie
 
-Serwis sterowany zdarzeniami. Konsumuje `OrderCreated`/`ReleaseStock` z Kafki,
-rezerwuje atomowo w Redis (Lua), zapisuje prawdę + zdarzenie do Postgresa
-(outbox) w jednej transakcji, a publisher wypycha `StockReserved/Failed/Released`
-na `inventory-events`. REST tylko do odczytu dostępności (+ test-support w non-prod).
+```bash
+# Build (wymaga JDK 25)
+./gradlew bootJar
 
-```mermaid
-flowchart LR
-    OE[["order-events"]] -->|"OrderCreated / ReleaseStock"| INV["shop-inventory consumer"]
-    INV -->|"Lua atomic"| R[("Redis stock:{productId}")]
-    INV -->|"reservation + event (tx)"| DB[("Postgres inventory_db + outbox")]
-    OBX["Outbox publisher"] -->|"StockReserved/Failed/Released"| IE[["inventory-events"]]
-    GW["gateway"] -->|"GET /inventory/{id} -> available"| INV
+# Docker
+docker build -t shop-inventory .
+docker run -p 8080:8080 shop-inventory
 ```
 
-## Low Level Design (diagram aktywności)
+## Testy
 
-Rezerwacja na `OrderCreated`:
-
-```mermaid
-flowchart TD
-    A(["OrderCreated"]) --> B{"event_id w processed_events?"}
-    B -- tak --> Z(["ack, pomiń (idempotencja)"])
-    B -- nie --> C{"Lua: stock >= qty?"}
-    C -- tak --> D["DECRBY stock + SET reservation TTL"]
-    D --> E["(tx) reservation + StockReserved -> outbox + mark processed"]
-    C -- nie --> F["(tx) StockReservationFailed -> outbox + mark processed"]
-    E --> P["publisher emituje zdarzenie"]
-    F --> P
-    P --> Z2(["ack"])
+```bash
+./gradlew test          # testy jednostkowe + cucumber
 ```
+
+## CI
+
+Każdy PR uruchamia pełny preprod gate (`pr-to-main.yml`): buduje obraz, deployuje na lokalny klaster kind i odpala acceptance testy (`shop-acceptance-tests`). PR jest mergowalny dopiero po zielonym statusie `preprod-gate / gate`.
