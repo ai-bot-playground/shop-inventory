@@ -55,6 +55,10 @@ public class StockRedis {
         return r == null ? 0L : r;
     }
 
+    public void initializeStock(String productId, long units) {
+        redis.opsForValue().setIfAbsent(stockKey(productId), Long.toString(units));
+    }
+
     public void setStock(String productId, long units) {
         redis.opsForValue().set(stockKey(productId), Long.toString(units));
     }
