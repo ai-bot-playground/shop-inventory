@@ -2,12 +2,17 @@ package com.shop.inventory.steps;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.shop.inventory.config.InitialStockInitializer;
+import com.shop.inventory.redis.StockRedis;
 import com.shop.inventory.repo.OutboxRepository;
 import com.shop.inventory.service.InventoryService;
 import io.cucumber.java.en.Given;
 import io.cucumber.java.en.Then;
 import io.cucumber.java.en.When;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.RedisConnectionFailureException;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -21,6 +26,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class InventorySteps {
 
@@ -30,12 +38,88 @@ public class InventorySteps {
     private final InventoryService service;
     private final OutboxRepository outbox;
     private final int port;
+    private final StockRedis stockRedis;
+    private final StringRedisTemplate redis;
+    private final InitialStockInitializer initializer;
+    private InitialStockInitializer failingInitializer;
+    private RedisConnectionFailureException redisFailure;
+    private Throwable initializationFailure;
 
     public InventorySteps(InventoryService service, OutboxRepository outbox,
-                          @Value("${local.server.port}") int port) {
+                          @Value("${local.server.port}") int port,
+                          StockRedis stockRedis, StringRedisTemplate redis,
+                          InitialStockInitializer initializer) {
         this.service = service;
         this.outbox = outbox;
         this.port = port;
+        this.stockRedis = stockRedis;
+        this.redis = redis;
+        this.initializer = initializer;
+    }
+
+    @Given("the stock counters for products 1, 2 and 3 are missing")
+    public void initialStockCountersAreMissing() {
+        for (String productId : List.of("1", "2", "3")) {
+            stockRedis.deleteStock(productId);
+        }
+    }
+
+    @When("the initial stock initializer runs")
+    public void initialStockInitializerRuns() {
+        initializer.run(null);
+    }
+
+    @When("the initial stock initializer runs again")
+    public void initialStockInitializerRunsAgain() {
+        initializer.run(null);
+    }
+
+    @Then("products 1, 2 and 3 each have 100 units in stock")
+    public void seededProductsHaveStock() {
+        for (String productId : List.of("1", "2", "3")) {
+            assertThat(stockRedis.getStock(productId)).as("stock for product %s", productId)
+                    .isEqualTo(100L);
+        }
+    }
+
+    @Then("the stock counters for products 1, 2 and 3 have no TTL")
+    public void seededStockHasNoTtl() {
+        for (String productId : List.of("1", "2", "3")) {
+            assertThat(redis.getExpire("stock:" + productId)).as("TTL for product %s", productId)
+                    .isEqualTo(-1L);
+        }
+    }
+
+    @Given("product {string} has an existing stock counter of {int} units")
+    public void existingStockCounter(String productId, int units) {
+        stockRedis.setStock(productId, units);
+    }
+
+    @Then("the stock counter for product {string} remains {int}")
+    public void stockCounterRemains(String productId, int units) {
+        assertThat(stockRedis.getStock(productId)).isEqualTo((long) units);
+    }
+
+    @Given("Redis is unavailable during stock initialization")
+    @SuppressWarnings("unchecked")
+    public void redisIsUnavailableDuringInitialization() {
+        StringRedisTemplate unavailableRedis = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> operations = mock(ValueOperations.class);
+        redisFailure = new RedisConnectionFailureException("Redis is unavailable");
+        when(unavailableRedis.opsForValue()).thenReturn(operations);
+        when(operations.setIfAbsent("stock:1", "100")).thenThrow(redisFailure);
+        failingInitializer = new InitialStockInitializer(new StockRedis(unavailableRedis));
+        initializationFailure = null;
+    }
+
+    @When("the initial stock initializer runs with unavailable Redis")
+    public void initialStockInitializerRunsWithUnavailableRedis() {
+        initializationFailure = catchThrowable(() -> failingInitializer.run(null));
+    }
+
+    @Then("stock initialization fails with the Redis error")
+    public void initializationFailsWithRedisError() {
+        assertThat(initializationFailure).isSameAs(redisFailure);
     }
 
     @Given("product {string} has {int} units in stock")
